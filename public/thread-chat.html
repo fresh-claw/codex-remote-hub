@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>Codex Remote Hub</title>
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg?v=20260329f">
+    <link rel="stylesheet" href="./thread-chat.css?v=20260329f">
+  </head>
+  <body>
+    <div id="loginGate" class="login-gate">
+      <form id="loginForm" class="login-card" autocomplete="on">
+        <p class="login-kicker">Codex Remote Hub</p>
+        <h1>远程任务台</h1>
+        <p class="login-copy">登录后可查看线程进展，并向对应线程发送推进消息。</p>
+        <label class="login-field">
+          <span>访问密码</span>
+          <input id="passwordInput" type="password" placeholder="输入强密码" autocomplete="current-password" required>
+        </label>
+        <button id="loginButton" class="primary-button" type="submit">进入</button>
+        <p id="loginError" class="login-error" aria-live="polite"></p>
+      </form>
+    </div>
+
+    <div id="appShell" class="app-shell hidden">
+      <div id="sidebarBackdrop" class="sidebar-backdrop hidden"></div>
+      <aside class="sidebar">
+        <div class="sidebar-head">
+          <div>
+            <p class="eyebrow">本机任务</p>
+            <h1>Codex Remote Hub</h1>
+          </div>
+          <div class="sidebar-head-actions">
+            <button id="sidebarCloseButton" class="ghost-button compact mobile-only" type="button">收起</button>
+            <button id="logoutButton" class="ghost-button compact" type="button">锁定</button>
+          </div>
+        </div>
+
+        <div class="sidebar-toolbar">
+          <div class="security-pill">强密码保护</div>
+          <button id="refreshButton" class="ghost-button" type="button">刷新</button>
+        </div>
+
+        <div class="sidebar-meta">
+          <span id="syncBadge">同步于 --</span>
+          <span id="threadCountLabel">0 个线程</span>
+        </div>
+
+        <nav id="threadList" class="thread-list" aria-label="Threads"></nav>
+      </aside>
+
+      <main class="chat-shell">
+        <header class="chat-head">
+          <div class="chat-head-main">
+            <span id="threadStateLabel" class="thread-state-pill">等待选择线程</span>
+            <h2 id="threadTitle">选择左侧线程</h2>
+          </div>
+          <div class="chat-meta">
+            <button id="mobileThreadButton" class="ghost-button compact mobile-only" type="button">线程</button>
+            <span id="threadActiveAt">最后活动 --</span>
+            <span id="threadCanSend" class="send-badge idle">可发送</span>
+          </div>
+        </header>
+
+        <section id="messageList" class="message-list empty">
+          选择一个线程后，这里会显示对话内容。
+        </section>
+
+        <footer class="composer">
+          <div class="quick-row">
+            <button class="quick-chip" data-quick-message="继续" type="button">继续</button>
+            <button class="quick-chip" data-quick-message="进度？" type="button">进度？</button>
+            <button class="quick-chip" data-quick-message="不对" type="button">不对</button>
+          </div>
+
+          <label class="composer-field">
+            <textarea id="composerInput" rows="3" placeholder="直接向当前线程发送消息"></textarea>
+          </label>
+
+          <div class="composer-actions">
+            <span id="composerStatus" class="composer-tip">按 ⌘/Ctrl + Enter 发送</span>
+            <button id="sendButton" class="primary-button" type="button">发送</button>
+          </div>
+        </footer>
+      </main>
+    </div>
+
+    <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+
+    <script src="./thread-chat.js?v=20260329f" type="module"></script>
+  </body>
+</html>

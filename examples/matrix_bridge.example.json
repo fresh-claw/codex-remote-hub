@@ -1,0 +1,20 @@
+{
+  "homeserverUrl": "https://matrix.example.com",
+  "accessToken": "",
+  "password": "YOUR_MATRIX_BOT_PASSWORD",
+  "userId": "@codex-dispatch:example.com",
+  "dispatchRoomId": "!dispatchRoomId:example.com",
+  "allowedUserIds": [
+    "@your-user:example.com"
+  ],
+  "inviteUserIds": [
+    "@your-user:example.com"
+  ],
+  "codexConsoleBaseUrl": "http://127.0.0.1:8787",
+  "codexBridgeToken": "",
+  "defaultCwd": ".",
+  "stateDir": "./state/matrix_bridge",
+  "syncTimeoutMs": 30000,
+  "statusPollMs": 60000,
+  "threadListLimit": 12
+}

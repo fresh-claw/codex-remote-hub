@@ -1,0 +1,16 @@
+{
+  "name": "codex-remote-hub",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Remote task hub for local Codex jobs.",
+  "scripts": {
+    "start": "node server.mjs",
+    "bridge": "node matrix_bridge.mjs --config ./config/matrix_bridge.json",
+    "nudger": "node thread_nudger.mjs --config ./config/thread_nudger.json",
+    "auth:init": "node scripts/generate-thread-chat-auth.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "enabled": true,
+  "baseUrl": "http://127.0.0.1:8787",
+  "pollIntervalMs": 300000,
+  "threadLimit": 12,
+  "idleMinutes": 15,
+  "cooldownMinutes": 30,
+  "maxThreadsPerCycle": 1,
+  "maxNudgesPerThreadPerDay": 3,
+  "recentThreadHours": 48,
+  "requireAssistantLast": true,
+  "onlyStates": [
+    "waiting",
+    "dead"
+  ],
+  "promptSequence": [
+    "进度？",
+    "继续",
+    "卡住了吗？"
+  ],
+  "includeTitlePatterns": [],
+  "excludeTitlePatterns": [],
+  "includeCwdPatterns": [],
+  "excludeCwdPatterns": [],
+  "stateFile": "./state/thread_nudger/state.json"
+}
