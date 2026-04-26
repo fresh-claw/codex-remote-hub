@@ -4,8 +4,8 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <title>Codex Remote Hub</title>
-    <link rel="icon" type="image/svg+xml" href="./favicon.svg?v=20260329f">
-    <link rel="stylesheet" href="./thread-chat.css?v=20260329f">
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg?v=20260427a">
+    <link rel="stylesheet" href="./thread-chat.css?v=20260427a">
   </head>
   <body>
     <div id="loginGate" class="login-gate">
@@ -64,51 +64,70 @@
         </header>
 
         <section id="autopilotPanel" class="autopilot-panel hidden" aria-label="托管编排">
-          <div class="autopilot-head">
-            <div>
+          <div class="autopilot-card">
+            <div class="autopilot-copy">
               <p class="eyebrow">夜间托管</p>
-              <h3>自动推进线程</h3>
+              <h3>让 Codex 自己往下跑</h3>
+              <p id="autopilotSummary">选择模式后，可开启托管或立即执行一次。</p>
             </div>
-            <label class="switch-row">
+            <div class="autopilot-status-card">
               <span id="autopilotStateText">关闭</span>
-              <input id="autopilotEnabledInput" type="checkbox">
-            </label>
+              <strong id="autopilotModeText">夜间继续</strong>
+            </div>
           </div>
 
-          <div class="autopilot-grid">
-            <label class="mini-field">
-              <span>无变化后发送</span>
-              <input id="autopilotIntervalInput" type="number" min="1" max="240" value="15">
-            </label>
-            <label class="mini-field">
-              <span>同线程间隔</span>
-              <input id="autopilotCooldownInput" type="number" min="1" max="240" value="15">
-            </label>
-            <label class="mini-field">
-              <span>每轮线程数</span>
-              <input id="autopilotMaxThreadsInput" type="number" min="1" max="20" value="2">
-            </label>
+          <div id="autopilotPresetList" class="autopilot-presets" aria-label="托管模式">
+            <button class="preset-chip active" data-autopilot-preset="night" type="button">
+              <strong>夜间继续</strong>
+              <span>适合睡前长任务</span>
+            </button>
+            <button class="preset-chip" data-autopilot-preset="progress" type="button">
+              <strong>进度巡检</strong>
+              <span>先问卡点再推进</span>
+            </button>
+            <button class="preset-chip" data-autopilot-preset="step" type="button">
+              <strong>拆步执行</strong>
+              <span>要求拆小步继续</span>
+            </button>
           </div>
 
-          <label class="autopilot-textarea">
-            <span>话术编排，每行一条，按顺序轮换</span>
-            <textarea id="autopilotStepsInput" rows="4">继续
+          <div class="autopilot-actions">
+            <button id="autopilotPowerButton" class="primary-button" type="button">开启托管</button>
+            <button id="autopilotRunButton" class="ghost-button" type="button">执行一次</button>
+            <button id="autopilotAdvancedButton" class="ghost-button" type="button">高级设置</button>
+            <span id="autopilotStatus" class="composer-tip">未同步</span>
+          </div>
+
+          <div id="autopilotAdvancedFields" class="autopilot-advanced hidden">
+            <div class="autopilot-grid">
+              <label class="mini-field">
+                <span>无变化后发送</span>
+                <input id="autopilotIntervalInput" type="number" min="1" max="240" value="15">
+              </label>
+              <label class="mini-field">
+                <span>同线程间隔</span>
+                <input id="autopilotCooldownInput" type="number" min="1" max="240" value="15">
+              </label>
+              <label class="mini-field">
+                <span>每轮线程数</span>
+                <input id="autopilotMaxThreadsInput" type="number" min="1" max="20" value="2">
+              </label>
+            </div>
+
+            <label class="autopilot-textarea">
+              <span>话术编排，每行一条，按顺序轮换</span>
+              <textarea id="autopilotStepsInput" rows="4">继续
 进度？
 请拆下一步并继续执行，完成后说明结果。</textarea>
-          </label>
+            </label>
 
-          <label class="autopilot-textarea">
-            <span>完成识别词，命中后不再自动发送</span>
-            <textarea id="autopilotDoneInput" rows="2">已完成
+            <label class="autopilot-textarea">
+              <span>完成识别词，命中后停止托管</span>
+              <textarea id="autopilotDoneInput" rows="2">已完成
 完成了
 done
 finished</textarea>
-          </label>
-
-          <div class="autopilot-actions">
-            <button id="autopilotSaveButton" class="primary-button" type="button">保存编排</button>
-            <button id="autopilotRunButton" class="ghost-button" type="button">立即执行一次</button>
-            <span id="autopilotStatus" class="composer-tip">未同步</span>
+            </label>
           </div>
         </section>
 
@@ -137,6 +156,6 @@ finished</textarea>
 
     <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
 
-    <script src="./thread-chat.js?v=20260329f" type="module"></script>
+    <script src="./thread-chat.js?v=20260427a" type="module"></script>
   </body>
 </html>

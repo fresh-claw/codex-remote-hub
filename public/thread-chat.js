@@ -14,7 +14,30 @@ const state = {
   pendingMessage: null,
   autopilot: null,
   autopilotOpen: false,
+  autopilotAdvancedOpen: false,
+  selectedAutopilotPreset: "night",
   isSavingAutopilot: false,
+};
+
+const AUTOPILOT_PRESETS = {
+  night: {
+    id: "night-default",
+    name: "夜间继续",
+    summary: "15 分钟无变化后，按顺序发送继续和进度类消息。",
+    steps: ["继续", "进度？", "请拆下一步并继续执行，完成后说明结果。"],
+  },
+  progress: {
+    id: "progress-check",
+    name: "进度巡检",
+    summary: "先问当前进度，再要求说明卡点和下一步。",
+    steps: ["进度？", "如果卡住，请说明卡点和下一步。", "请继续执行下一步。"],
+  },
+  step: {
+    id: "step-runner",
+    name: "拆步执行",
+    summary: "适合复杂任务，要求 Codex 拆成小步持续完成。",
+    steps: ["请把剩余任务拆成下一小步，并直接执行。", "继续执行下一小步，完成后报告结果。", "如果发现问题，请先修复再继续。"],
+  },
 };
 
 const routeBase = (() => {
@@ -50,14 +73,18 @@ const threadActiveAt = document.getElementById("threadActiveAt");
 const threadCanSend = document.getElementById("threadCanSend");
 const autopilotToggleButton = document.getElementById("autopilotToggleButton");
 const autopilotPanel = document.getElementById("autopilotPanel");
+const autopilotSummary = document.getElementById("autopilotSummary");
 const autopilotStateText = document.getElementById("autopilotStateText");
-const autopilotEnabledInput = document.getElementById("autopilotEnabledInput");
+const autopilotModeText = document.getElementById("autopilotModeText");
+const autopilotPresetList = document.getElementById("autopilotPresetList");
+const autopilotPowerButton = document.getElementById("autopilotPowerButton");
+const autopilotAdvancedButton = document.getElementById("autopilotAdvancedButton");
+const autopilotAdvancedFields = document.getElementById("autopilotAdvancedFields");
 const autopilotIntervalInput = document.getElementById("autopilotIntervalInput");
 const autopilotCooldownInput = document.getElementById("autopilotCooldownInput");
 const autopilotMaxThreadsInput = document.getElementById("autopilotMaxThreadsInput");
 const autopilotStepsInput = document.getElementById("autopilotStepsInput");
 const autopilotDoneInput = document.getElementById("autopilotDoneInput");
-const autopilotSaveButton = document.getElementById("autopilotSaveButton");
 const autopilotRunButton = document.getElementById("autopilotRunButton");
 const autopilotStatus = document.getElementById("autopilotStatus");
 const messageList = document.getElementById("messageList");
@@ -257,48 +284,84 @@ function linesFromTextarea(value) {
     .filter(Boolean);
 }
 
+function getCurrentAutopilotConfig() {
+  return state.autopilot?.config || {};
+}
+
+function presetFromConfig(config = {}) {
+  const script = config.scripts?.[0] || {};
+  const scriptId = String(script.id || "");
+  const matched = Object.entries(AUTOPILOT_PRESETS).find(([, preset]) => preset.id === scriptId);
+  return matched?.[0] || state.selectedAutopilotPreset || "night";
+}
+
 function renderAutopilotPanel() {
   const payload = state.autopilot;
-  const config = payload?.config || {};
+  const config = getCurrentAutopilotConfig();
   const script = config.scripts?.[0] || {};
   const steps = Array.isArray(script.steps) ? script.steps : [];
+  const presetKey = presetFromConfig(config);
+  const preset = AUTOPILOT_PRESETS[presetKey] || AUTOPILOT_PRESETS.night;
+  state.selectedAutopilotPreset = presetKey;
 
   autopilotPanel.classList.toggle("hidden", !state.autopilotOpen);
   autopilotToggleButton.classList.toggle("active", state.autopilotOpen);
-  autopilotEnabledInput.checked = config.enabled === true;
+  autopilotAdvancedFields.classList.toggle("hidden", !state.autopilotAdvancedOpen);
   autopilotStateText.textContent = config.enabled ? "开启" : "关闭";
+  autopilotStateText.className = config.enabled ? "autopilot-on" : "autopilot-off";
+  autopilotModeText.textContent = preset.name;
+  autopilotSummary.textContent = preset.summary;
+  autopilotPowerButton.textContent = config.enabled ? "暂停托管" : "开启托管";
+  autopilotPowerButton.classList.toggle("danger-button", config.enabled === true);
+  autopilotAdvancedButton.textContent = state.autopilotAdvancedOpen ? "收起设置" : "高级设置";
   autopilotIntervalInput.value = String(config.intervalMinutes || 15);
   autopilotCooldownInput.value = String(config.cooldownMinutes || 15);
   autopilotMaxThreadsInput.value = String(config.maxThreadsPerTick || 2);
-  autopilotStepsInput.value = steps.map((step) => step.message).filter(Boolean).join("\n") || "继续";
+  autopilotStepsInput.value = steps.map((step) => step.message).filter(Boolean).join("\n") || preset.steps.join("\n");
   autopilotDoneInput.value = (config.completionPatterns || []).join("\n");
+  for (const button of autopilotPresetList.querySelectorAll("[data-autopilot-preset]")) {
+    button.classList.toggle("active", button.dataset.autopilotPreset === presetKey);
+  }
   autopilotStatus.textContent = payload?.state?.lastTickAt
     ? `上次执行 ${timeStamp(payload.state.lastTickAt)}`
     : "尚未执行";
 }
 
-function buildAutopilotConfigFromForm() {
-  const current = state.autopilot?.config || {};
+function buildAutopilotConfig({ enabled = getCurrentAutopilotConfig().enabled === true, presetKey = state.selectedAutopilotPreset } = {}) {
+  const current = getCurrentAutopilotConfig();
+  const preset = AUTOPILOT_PRESETS[presetKey] || AUTOPILOT_PRESETS.night;
+  const customSteps = linesFromTextarea(autopilotStepsInput.value);
+  const steps = state.autopilotAdvancedOpen && customSteps.length ? customSteps : preset.steps;
   return {
     ...current,
-    enabled: autopilotEnabledInput.checked,
+    enabled,
     intervalMinutes: Number(autopilotIntervalInput.value) || 15,
     cooldownMinutes: Number(autopilotCooldownInput.value) || 15,
     maxThreadsPerTick: Number(autopilotMaxThreadsInput.value) || 2,
     completionPatterns: linesFromTextarea(autopilotDoneInput.value),
     scripts: [
       {
-        id: current.scripts?.[0]?.id || "night-default",
-        name: current.scripts?.[0]?.name || "夜间继续",
+        id: preset.id,
+        name: preset.name,
         enabled: true,
         mode: "sequence",
-        steps: linesFromTextarea(autopilotStepsInput.value).map((message) => ({
+        steps: steps.map((message) => ({
           condition: "idle",
           message,
         })),
       },
     ],
   };
+}
+
+async function saveAutopilotConfig(config, toastMessage = "托管设置已更新") {
+  state.autopilot = await fetchJson("/api/chat-ui/autopilot", {
+    method: "PUT",
+    body: JSON.stringify({ config }),
+  });
+  renderAutopilotPanel();
+  showToast(toastMessage);
+  return state.autopilot;
 }
 
 async function loadAutopilot() {
@@ -310,19 +373,14 @@ async function loadAutopilot() {
 async function saveAutopilot() {
   if (state.isSavingAutopilot) return;
   state.isSavingAutopilot = true;
-  autopilotSaveButton.disabled = true;
-  autopilotSaveButton.textContent = "保存中...";
+  autopilotPowerButton.disabled = true;
+  autopilotRunButton.disabled = true;
   try {
-    state.autopilot = await fetchJson("/api/chat-ui/autopilot", {
-      method: "PUT",
-      body: JSON.stringify({ config: buildAutopilotConfigFromForm() }),
-    });
-    renderAutopilotPanel();
-    showToast("托管编排已保存");
+    await saveAutopilotConfig(buildAutopilotConfig(), "托管设置已保存");
   } finally {
     state.isSavingAutopilot = false;
-    autopilotSaveButton.disabled = false;
-    autopilotSaveButton.textContent = "保存编排";
+    autopilotPowerButton.disabled = false;
+    autopilotRunButton.disabled = false;
   }
 }
 
@@ -330,6 +388,9 @@ async function runAutopilotNow() {
   autopilotRunButton.disabled = true;
   autopilotRunButton.textContent = "执行中...";
   try {
+    if (!getCurrentAutopilotConfig().enabled) {
+      await saveAutopilotConfig(buildAutopilotConfig({ enabled: true }), "已开启托管");
+    }
     const result = await fetchJson("/api/chat-ui/autopilot/tick", {
       method: "POST",
       body: JSON.stringify({}),
@@ -627,19 +688,34 @@ refreshButton.addEventListener("click", () => {
 });
 
 autopilotToggleButton.addEventListener("click", () => {
-  state.autopilotOpen = !state.autopilotOpen;
-  renderAutopilotPanel();
-  if (state.autopilotOpen && !state.autopilot) {
+    state.autopilotOpen = !state.autopilotOpen;
+    renderAutopilotPanel();
+    if (state.autopilotOpen && !state.autopilot) {
     loadAutopilot().catch((error) => showToast(error.message));
   }
 });
 
-autopilotEnabledInput.addEventListener("change", () => {
-  autopilotStateText.textContent = autopilotEnabledInput.checked ? "开启" : "关闭";
+autopilotPresetList.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-autopilot-preset]");
+  if (!button) return;
+  state.selectedAutopilotPreset = button.dataset.autopilotPreset || "night";
+  const preset = AUTOPILOT_PRESETS[state.selectedAutopilotPreset] || AUTOPILOT_PRESETS.night;
+  autopilotStepsInput.value = preset.steps.join("\n");
+  saveAutopilotConfig(buildAutopilotConfig({ presetKey: state.selectedAutopilotPreset }), `已切换为${preset.name}`)
+    .catch((error) => showToast(error.message));
 });
 
-autopilotSaveButton.addEventListener("click", () => {
-  saveAutopilot().catch((error) => showToast(error.message));
+autopilotPowerButton.addEventListener("click", () => {
+  const nextEnabled = !(getCurrentAutopilotConfig().enabled === true);
+  saveAutopilotConfig(
+    buildAutopilotConfig({ enabled: nextEnabled }),
+    nextEnabled ? "托管已开启" : "托管已暂停",
+  ).catch((error) => showToast(error.message));
+});
+
+autopilotAdvancedButton.addEventListener("click", () => {
+  state.autopilotAdvancedOpen = !state.autopilotAdvancedOpen;
+  renderAutopilotPanel();
 });
 
 autopilotRunButton.addEventListener("click", () => {

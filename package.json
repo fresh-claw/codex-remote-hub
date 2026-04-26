@@ -8,7 +8,8 @@
     "start": "node server.mjs",
     "bridge": "node matrix_bridge.mjs --config ./config/matrix_bridge.json",
     "nudger": "node thread_nudger.mjs --config ./config/thread_nudger.json",
-    "auth:init": "node scripts/generate-thread-chat-auth.mjs"
+    "auth:init": "node scripts/generate-thread-chat-auth.mjs",
+    "test:ui": "node scripts/test-thread-chat-ui.mjs"
   },
   "engines": {
     "node": ">=20"
