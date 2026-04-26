@@ -26,7 +26,7 @@ const DEFAULT_CONFIG = {
   idleMinutes: 15,
   cooldownMinutes: 30,
   maxThreadsPerCycle: 1,
-  maxNudgesPerThreadPerDay: 3,
+  maxNudgesPerThreadPerDay: 0,
   recentThreadHours: 48,
   requireAssistantLast: true,
   onlyStates: ["waiting", "dead"],
@@ -88,7 +88,7 @@ function mergeConfig(raw = {}) {
     idleMinutes: Math.max(1, Number(raw.idleMinutes) || DEFAULT_CONFIG.idleMinutes),
     cooldownMinutes: Math.max(1, Number(raw.cooldownMinutes) || DEFAULT_CONFIG.cooldownMinutes),
     maxThreadsPerCycle: Math.max(1, Number(raw.maxThreadsPerCycle) || DEFAULT_CONFIG.maxThreadsPerCycle),
-    maxNudgesPerThreadPerDay: Math.max(1, Number(raw.maxNudgesPerThreadPerDay) || DEFAULT_CONFIG.maxNudgesPerThreadPerDay),
+    maxNudgesPerThreadPerDay: Math.max(0, Number(raw.maxNudgesPerThreadPerDay) || DEFAULT_CONFIG.maxNudgesPerThreadPerDay),
     recentThreadHours: Math.max(1, Number(raw.recentThreadHours) || DEFAULT_CONFIG.recentThreadHours),
     requireAssistantLast: raw.requireAssistantLast !== false,
     onlyStates: normalizePatterns(raw.onlyStates).length ? normalizePatterns(raw.onlyStates) : [...DEFAULT_CONFIG.onlyStates],
@@ -461,7 +461,7 @@ function shouldIncludeThread(thread, config, nowMs, entry) {
     return { ok: false, reason: "cooldown" };
   }
 
-  if (entry.countToday >= config.maxNudgesPerThreadPerDay) {
+  if (config.maxNudgesPerThreadPerDay > 0 && entry.countToday >= config.maxNudgesPerThreadPerDay) {
     return { ok: false, reason: "daily-limit" };
   }
 

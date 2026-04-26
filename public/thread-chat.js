@@ -12,6 +12,9 @@ const state = {
   isLoading: false,
   isSending: false,
   pendingMessage: null,
+  autopilot: null,
+  autopilotOpen: false,
+  isSavingAutopilot: false,
 };
 
 const routeBase = (() => {
@@ -45,6 +48,18 @@ const threadStateLabel = document.getElementById("threadStateLabel");
 const threadTitle = document.getElementById("threadTitle");
 const threadActiveAt = document.getElementById("threadActiveAt");
 const threadCanSend = document.getElementById("threadCanSend");
+const autopilotToggleButton = document.getElementById("autopilotToggleButton");
+const autopilotPanel = document.getElementById("autopilotPanel");
+const autopilotStateText = document.getElementById("autopilotStateText");
+const autopilotEnabledInput = document.getElementById("autopilotEnabledInput");
+const autopilotIntervalInput = document.getElementById("autopilotIntervalInput");
+const autopilotCooldownInput = document.getElementById("autopilotCooldownInput");
+const autopilotMaxThreadsInput = document.getElementById("autopilotMaxThreadsInput");
+const autopilotStepsInput = document.getElementById("autopilotStepsInput");
+const autopilotDoneInput = document.getElementById("autopilotDoneInput");
+const autopilotSaveButton = document.getElementById("autopilotSaveButton");
+const autopilotRunButton = document.getElementById("autopilotRunButton");
+const autopilotStatus = document.getElementById("autopilotStatus");
 const messageList = document.getElementById("messageList");
 const composerInput = document.getElementById("composerInput");
 const sendButton = document.getElementById("sendButton");
@@ -235,6 +250,100 @@ function setComposerState(canSend) {
   composerInput.placeholder = canSend ? "直接向当前线程发送消息" : "当前线程仍在执行，等这一轮结束后再发送";
 }
 
+function linesFromTextarea(value) {
+  return String(value || "")
+    .split("\n")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function renderAutopilotPanel() {
+  const payload = state.autopilot;
+  const config = payload?.config || {};
+  const script = config.scripts?.[0] || {};
+  const steps = Array.isArray(script.steps) ? script.steps : [];
+
+  autopilotPanel.classList.toggle("hidden", !state.autopilotOpen);
+  autopilotToggleButton.classList.toggle("active", state.autopilotOpen);
+  autopilotEnabledInput.checked = config.enabled === true;
+  autopilotStateText.textContent = config.enabled ? "开启" : "关闭";
+  autopilotIntervalInput.value = String(config.intervalMinutes || 15);
+  autopilotCooldownInput.value = String(config.cooldownMinutes || 15);
+  autopilotMaxThreadsInput.value = String(config.maxThreadsPerTick || 2);
+  autopilotStepsInput.value = steps.map((step) => step.message).filter(Boolean).join("\n") || "继续";
+  autopilotDoneInput.value = (config.completionPatterns || []).join("\n");
+  autopilotStatus.textContent = payload?.state?.lastTickAt
+    ? `上次执行 ${timeStamp(payload.state.lastTickAt)}`
+    : "尚未执行";
+}
+
+function buildAutopilotConfigFromForm() {
+  const current = state.autopilot?.config || {};
+  return {
+    ...current,
+    enabled: autopilotEnabledInput.checked,
+    intervalMinutes: Number(autopilotIntervalInput.value) || 15,
+    cooldownMinutes: Number(autopilotCooldownInput.value) || 15,
+    maxThreadsPerTick: Number(autopilotMaxThreadsInput.value) || 2,
+    completionPatterns: linesFromTextarea(autopilotDoneInput.value),
+    scripts: [
+      {
+        id: current.scripts?.[0]?.id || "night-default",
+        name: current.scripts?.[0]?.name || "夜间继续",
+        enabled: true,
+        mode: "sequence",
+        steps: linesFromTextarea(autopilotStepsInput.value).map((message) => ({
+          condition: "idle",
+          message,
+        })),
+      },
+    ],
+  };
+}
+
+async function loadAutopilot() {
+  if (!state.authenticated) return;
+  state.autopilot = await fetchJson("/api/chat-ui/autopilot");
+  renderAutopilotPanel();
+}
+
+async function saveAutopilot() {
+  if (state.isSavingAutopilot) return;
+  state.isSavingAutopilot = true;
+  autopilotSaveButton.disabled = true;
+  autopilotSaveButton.textContent = "保存中...";
+  try {
+    state.autopilot = await fetchJson("/api/chat-ui/autopilot", {
+      method: "PUT",
+      body: JSON.stringify({ config: buildAutopilotConfigFromForm() }),
+    });
+    renderAutopilotPanel();
+    showToast("托管编排已保存");
+  } finally {
+    state.isSavingAutopilot = false;
+    autopilotSaveButton.disabled = false;
+    autopilotSaveButton.textContent = "保存编排";
+  }
+}
+
+async function runAutopilotNow() {
+  autopilotRunButton.disabled = true;
+  autopilotRunButton.textContent = "执行中...";
+  try {
+    const result = await fetchJson("/api/chat-ui/autopilot/tick", {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    const sentCount = result.sent?.length || 0;
+    showToast(sentCount ? `已推进 ${sentCount} 个线程` : "没有符合条件的线程");
+    await loadAutopilot();
+    await refreshAll({ forceScroll: false });
+  } finally {
+    autopilotRunButton.disabled = false;
+    autopilotRunButton.textContent = "立即执行一次";
+  }
+}
+
 function renderThreads() {
   threadList.innerHTML = "";
   threadCountLabel.textContent = `${state.threads.length} 个线程`;
@@ -371,6 +480,9 @@ async function refreshAll({ forceScroll = false } = {}) {
       state.selectedSession = null;
       renderSelectedThread();
     }
+    if (state.autopilotOpen) {
+      await loadAutopilot();
+    }
   } finally {
     state.isLoading = false;
     refreshButton.disabled = false;
@@ -441,6 +553,7 @@ async function bootstrap() {
     state.csrfToken = payload.csrfToken || "";
     setAuthenticated(true);
     await refreshAll({ forceScroll: true });
+    await loadAutopilot();
     startAutoSync();
   } catch (error) {
     console.error(error);
@@ -463,6 +576,7 @@ loginForm.addEventListener("submit", async (event) => {
     passwordInput.value = "";
     setAuthenticated(true);
     await refreshAll({ forceScroll: true });
+    await loadAutopilot();
     startAutoSync();
   } catch (error) {
     loginError.textContent = error.message || "登录失败";
@@ -510,6 +624,28 @@ sidebarBackdrop?.addEventListener("click", () => {
 
 refreshButton.addEventListener("click", () => {
   refreshAll().catch((error) => showToast(error.message));
+});
+
+autopilotToggleButton.addEventListener("click", () => {
+  state.autopilotOpen = !state.autopilotOpen;
+  renderAutopilotPanel();
+  if (state.autopilotOpen && !state.autopilot) {
+    loadAutopilot().catch((error) => showToast(error.message));
+  }
+});
+
+autopilotEnabledInput.addEventListener("change", () => {
+  autopilotStateText.textContent = autopilotEnabledInput.checked ? "开启" : "关闭";
+});
+
+autopilotSaveButton.addEventListener("click", () => {
+  saveAutopilot().catch((error) => showToast(error.message));
+});
+
+autopilotRunButton.addEventListener("click", () => {
+  saveAutopilot()
+    .then(runAutopilotNow)
+    .catch((error) => showToast(error.message));
 });
 
 sendButton.addEventListener("click", () => {

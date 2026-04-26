@@ -52,6 +52,10 @@ const THREAD_CHAT_SESSION_COOKIE = "codex_thread_chat_session";
 const THREAD_CHAT_CSRF_HEADER = "x-thread-chat-csrf";
 const THREAD_CHAT_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const THREAD_CHAT_MESSAGE_LIMIT = 120;
+const AUTOPILOT_DIR = path.join(WORK_CENTER_ROOT, "state", "thread_autopilot");
+const AUTOPILOT_CONFIG_FILE = path.join(AUTOPILOT_DIR, "config.json");
+const AUTOPILOT_STATE_FILE = path.join(AUTOPILOT_DIR, "state.json");
+const AUTOPILOT_TICK_MS = 60 * 1000;
 const DOC_ACCESS_BRIDGE_ORIGINS = new Set(
   String(process.env.DOC_ACCESS_BRIDGE_ORIGINS || "")
     .split(",")
@@ -75,6 +79,7 @@ let docAccessInventoryCache = {
   items: [],
 };
 let activeDocAccessRun = null;
+let autopilotTickRunning = false;
 const threadChatSessions = new Map();
 let threadChatAuthCache = {
   mtimeMs: 0,
@@ -1417,6 +1422,330 @@ async function queryThreadNudgerThreads(limit = MAX_THREAD_LIST) {
   };
 }
 
+const DEFAULT_AUTOPILOT_CONFIG = {
+  enabled: false,
+  intervalMinutes: 15,
+  cooldownMinutes: 15,
+  threadLimit: 40,
+  maxThreadsPerTick: 2,
+  recentThreadHours: 72,
+  requireAssistantLast: true,
+  onlyStates: ["waiting", "dead"],
+  completionPatterns: ["已完成", "完成了", "done", "finished", "task completed"],
+  dangerPatterns: ["删除全部", "清空", "付款", "转账", "发布到线上", "公开仓库", "reset --hard"],
+  scripts: [
+    {
+      id: "night-default",
+      name: "夜间继续",
+      enabled: true,
+      mode: "sequence",
+      steps: [
+        { condition: "idle", message: "继续" },
+        { condition: "idle", message: "进度？" },
+        { condition: "idle", message: "请拆下一步并继续执行，完成后说明结果。" },
+      ],
+    },
+  ],
+  threadRules: {},
+};
+
+function normalizeTextList(value, fallback = []) {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item || "").trim()).filter(Boolean);
+  }
+  if (typeof value === "string") {
+    return value.split("\n").map((item) => item.trim()).filter(Boolean);
+  }
+  return [...fallback];
+}
+
+function normalizeAutopilotStep(step) {
+  const item = step && typeof step === "object" ? step : {};
+  return {
+    condition: ["idle", "waiting", "dead", "contains", "always"].includes(item.condition) ? item.condition : "idle",
+    match: String(item.match || "").trim(),
+    message: String(item.message || "").trim(),
+  };
+}
+
+function normalizeAutopilotScript(script, index = 0) {
+  const item = script && typeof script === "object" ? script : {};
+  const steps = Array.isArray(item.steps) ? item.steps.map(normalizeAutopilotStep).filter((step) => step.message) : [];
+  return {
+    id: String(item.id || `script-${index + 1}`).trim(),
+    name: String(item.name || `编排 ${index + 1}`).trim(),
+    enabled: item.enabled !== false,
+    mode: item.mode === "first-match" ? "first-match" : "sequence",
+    steps: steps.length ? steps : DEFAULT_AUTOPILOT_CONFIG.scripts[0].steps,
+  };
+}
+
+function normalizeAutopilotConfig(raw = {}) {
+  const scripts = Array.isArray(raw.scripts)
+    ? raw.scripts.map(normalizeAutopilotScript).filter((script) => script.steps.length)
+    : [];
+  const threadRules = raw.threadRules && typeof raw.threadRules === "object" && !Array.isArray(raw.threadRules)
+    ? raw.threadRules
+    : {};
+  return {
+    ...DEFAULT_AUTOPILOT_CONFIG,
+    ...raw,
+    enabled: raw.enabled === true,
+    intervalMinutes: Math.max(1, Number(raw.intervalMinutes) || DEFAULT_AUTOPILOT_CONFIG.intervalMinutes),
+    cooldownMinutes: Math.max(1, Number(raw.cooldownMinutes) || DEFAULT_AUTOPILOT_CONFIG.cooldownMinutes),
+    threadLimit: Math.max(1, Math.min(Number(raw.threadLimit) || DEFAULT_AUTOPILOT_CONFIG.threadLimit, 120)),
+    maxThreadsPerTick: Math.max(1, Math.min(Number(raw.maxThreadsPerTick) || DEFAULT_AUTOPILOT_CONFIG.maxThreadsPerTick, 20)),
+    recentThreadHours: Math.max(1, Number(raw.recentThreadHours) || DEFAULT_AUTOPILOT_CONFIG.recentThreadHours),
+    requireAssistantLast: raw.requireAssistantLast !== false,
+    onlyStates: normalizeTextList(raw.onlyStates, DEFAULT_AUTOPILOT_CONFIG.onlyStates),
+    completionPatterns: normalizeTextList(raw.completionPatterns, DEFAULT_AUTOPILOT_CONFIG.completionPatterns),
+    dangerPatterns: normalizeTextList(raw.dangerPatterns, DEFAULT_AUTOPILOT_CONFIG.dangerPatterns),
+    scripts: scripts.length ? scripts : DEFAULT_AUTOPILOT_CONFIG.scripts,
+    threadRules,
+  };
+}
+
+async function readJsonFile(filePath, fallback) {
+  try {
+    return JSON.parse(await fs.readFile(filePath, "utf8"));
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return fallback;
+    }
+    throw error;
+  }
+}
+
+async function writeJsonFile(filePath, value) {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  const tempFile = `${filePath}.${randomUUID()}.tmp`;
+  await fs.writeFile(tempFile, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  await fs.rename(tempFile, filePath);
+}
+
+async function readAutopilotConfig() {
+  return normalizeAutopilotConfig(await readJsonFile(AUTOPILOT_CONFIG_FILE, DEFAULT_AUTOPILOT_CONFIG));
+}
+
+async function writeAutopilotConfig(config) {
+  const normalized = normalizeAutopilotConfig(config);
+  await writeJsonFile(AUTOPILOT_CONFIG_FILE, normalized);
+  return normalized;
+}
+
+async function readAutopilotState() {
+  const state = await readJsonFile(AUTOPILOT_STATE_FILE, {
+    version: 1,
+    lastTickAt: null,
+    updatedAt: null,
+    threads: {},
+    history: [],
+  });
+  return {
+    version: 1,
+    lastTickAt: null,
+    updatedAt: null,
+    threads: {},
+    history: [],
+    ...state,
+  };
+}
+
+async function writeAutopilotState(state) {
+  await writeJsonFile(AUTOPILOT_STATE_FILE, {
+    ...state,
+    updatedAt: new Date().toISOString(),
+  });
+}
+
+function autopilotLastSpeaker(thread) {
+  const assistantAt = isoToMillis(thread.lastAssistantAt);
+  const userAt = isoToMillis(thread.lastUserAt);
+  if (!assistantAt && !userAt) return null;
+  return assistantAt >= userAt ? "assistant" : "user";
+}
+
+function textContainsAny(text, patterns) {
+  const haystack = String(text || "").toLowerCase();
+  return patterns.some((pattern) => haystack.includes(String(pattern || "").toLowerCase()));
+}
+
+function autopilotStepMatches(step, thread) {
+  if (step.condition === "always") return true;
+  if (step.condition === "waiting") return thread.state === "waiting";
+  if (step.condition === "dead") return thread.state === "dead";
+  if (step.condition === "contains") {
+    return step.match && textContainsAny(`${thread.preview || ""}\n${thread.title || ""}`, [step.match]);
+  }
+  return thread.state === "waiting" || thread.state === "dead";
+}
+
+function getAutopilotThreadEntry(state, threadId) {
+  if (!state.threads || typeof state.threads !== "object") {
+    state.threads = {};
+  }
+  if (!state.threads[threadId]) {
+    state.threads[threadId] = {
+      enabled: true,
+      scriptId: null,
+      cursor: 0,
+      lastSentAt: null,
+      pausedReason: null,
+      history: [],
+    };
+  }
+  return state.threads[threadId];
+}
+
+function chooseAutopilotScript(config, entry) {
+  const scriptId = String(entry.scriptId || "").trim();
+  const scripts = config.scripts.filter((script) => script.enabled);
+  return scripts.find((script) => script.id === scriptId) || scripts[0] || null;
+}
+
+function chooseAutopilotPrompt(config, entry, thread) {
+  const script = chooseAutopilotScript(config, entry);
+  if (!script) return { prompt: "", script: null, step: null };
+  const steps = script.steps.filter((step) => step.message);
+  if (!steps.length) return { prompt: "", script, step: null };
+
+  if (script.mode === "first-match") {
+    const step = steps.find((item) => autopilotStepMatches(item, thread)) || null;
+    return { prompt: step?.message || "", script, step };
+  }
+
+  for (let offset = 0; offset < steps.length; offset += 1) {
+    const index = (entry.cursor + offset) % steps.length;
+    const step = steps[index];
+    if (!autopilotStepMatches(step, thread)) continue;
+    entry.cursor = index + 1;
+    return { prompt: step.message, script, step };
+  }
+  return { prompt: "", script, step: null };
+}
+
+function autopilotThreadSkipReason(config, state, thread, nowMs) {
+  const entry = getAutopilotThreadEntry(state, thread.id);
+  if (entry.enabled === false) return "线程已暂停";
+  if (!config.onlyStates.includes(thread.state)) return `状态不匹配：${thread.stateLabel || thread.state}`;
+  if (!thread.canSend) return "线程正在执行";
+  if (config.requireAssistantLast && autopilotLastSpeaker(thread) !== "assistant") return "最后一条不是 Codex";
+  if (textContainsAny(thread.preview || "", config.completionPatterns)) return "疑似已完成";
+
+  const lastActiveMs = isoToMillis(thread.lastActiveAt || thread.updatedAt);
+  if (!lastActiveMs) return "没有活动时间";
+  if (nowMs - lastActiveMs < config.intervalMinutes * 60 * 1000) return "未到间隔";
+
+  const updatedMs = isoToMillis(thread.updatedAt || thread.lastActiveAt);
+  if (!updatedMs || nowMs - updatedMs > config.recentThreadHours * 60 * 60 * 1000) return "线程过旧";
+
+  const lastSentMs = isoToMillis(entry.lastSentAt);
+  if (lastSentMs && nowMs - lastSentMs < config.cooldownMinutes * 60 * 1000) return "冷却中";
+  return "";
+}
+
+async function runAutopilotTick({ force = false } = {}) {
+  if (autopilotTickRunning) {
+    return { skipped: true, reason: "tick-running" };
+  }
+
+  autopilotTickRunning = true;
+  try {
+    const config = await readAutopilotConfig();
+    const state = await readAutopilotState();
+    const now = new Date();
+    const nowMs = now.getTime();
+    const sent = [];
+    const skipped = [];
+
+    if (!config.enabled && !force) {
+      state.lastTickAt = now.toISOString();
+      await writeAutopilotState(state);
+      return { config, state, sent, skipped, disabled: true, serverTime: now.toISOString() };
+    }
+
+    const payload = await queryThreadNudgerThreads(config.threadLimit);
+    for (const thread of payload.threads) {
+      const entry = getAutopilotThreadEntry(state, thread.id);
+      const reason = force ? "" : autopilotThreadSkipReason(config, state, thread, nowMs);
+      if (reason) {
+        skipped.push({ threadId: thread.id, title: thread.title, reason });
+        continue;
+      }
+
+      const { prompt, script, step } = chooseAutopilotPrompt(config, entry, thread);
+      if (!prompt) {
+        skipped.push({ threadId: thread.id, title: thread.title, reason: "没有匹配话术" });
+        continue;
+      }
+      if (textContainsAny(prompt, config.dangerPatterns)) {
+        entry.pausedReason = "话术命中危险词";
+        skipped.push({ threadId: thread.id, title: thread.title, reason: entry.pausedReason });
+        continue;
+      }
+
+      const run = spawnCodexRun({ mode: "resume", threadId: thread.id, prompt, cwd: thread.cwd || DEFAULT_CWD });
+      const record = {
+        at: new Date().toISOString(),
+        threadId: thread.id,
+        title: thread.title,
+        prompt,
+        scriptId: script?.id || null,
+        scriptName: script?.name || null,
+        condition: step?.condition || null,
+        runId: run.id,
+      };
+      entry.lastSentAt = record.at;
+      entry.pausedReason = null;
+      entry.history = [record, ...(Array.isArray(entry.history) ? entry.history : [])].slice(0, 30);
+      state.history = [record, ...(Array.isArray(state.history) ? state.history : [])].slice(0, 80);
+      sent.push(record);
+      if (sent.length >= config.maxThreadsPerTick) break;
+    }
+
+    state.lastTickAt = now.toISOString();
+    await writeAutopilotState(state);
+    return { config, state, sent, skipped, serverTime: now.toISOString() };
+  } finally {
+    autopilotTickRunning = false;
+  }
+}
+
+async function queryAutopilotView() {
+  const [config, state, threadsPayload] = await Promise.all([
+    readAutopilotConfig(),
+    readAutopilotState(),
+    queryThreadNudgerThreads(DEFAULT_AUTOPILOT_CONFIG.threadLimit),
+  ]);
+  const nowMs = Date.now();
+  const threads = threadsPayload.threads.map((thread) => {
+    const entry = getAutopilotThreadEntry(state, thread.id);
+    return {
+      id: thread.id,
+      title: thread.title,
+      state: thread.state,
+      stateLabel: thread.stateLabel,
+      lastActiveAt: thread.lastActiveAt,
+      enabled: entry.enabled !== false,
+      scriptId: entry.scriptId || null,
+      lastSentAt: entry.lastSentAt || null,
+      pausedReason: entry.pausedReason || null,
+      nextActionInSeconds: Math.max(0, Math.ceil(((isoToMillis(thread.lastActiveAt || thread.updatedAt) + config.intervalMinutes * 60 * 1000) - nowMs) / 1000)),
+      skipReason: autopilotThreadSkipReason(config, state, thread, nowMs),
+    };
+  });
+  return {
+    config,
+    state: {
+      lastTickAt: state.lastTickAt,
+      updatedAt: state.updatedAt,
+      history: Array.isArray(state.history) ? state.history.slice(0, 30) : [],
+    },
+    threads,
+    serverTime: new Date().toISOString(),
+  };
+}
+
 function spawnCodexRun({ mode, prompt, threadId, cwd, additionalDirs = [], metadata = {} }) {
   const runId = randomUUID();
   const run = {
@@ -1948,8 +2277,8 @@ const server = createServer(async (req, res) => {
   try {
     assertAuthorized(req, requestUrl);
 
-    if (!["GET", "POST", "OPTIONS"].includes(req.method || "")) {
-      sendJson(res, 405, { error: "Method not allowed" }, { allow: "GET, POST, OPTIONS" });
+    if (!["GET", "POST", "PUT", "OPTIONS"].includes(req.method || "")) {
+      sendJson(res, 405, { error: "Method not allowed" }, { allow: "GET, POST, PUT, OPTIONS" });
       return;
     }
 
@@ -2167,6 +2496,36 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === "GET" && requestUrl.pathname === "/api/chat-ui/autopilot") {
+      getThreadChatSession(req, { required: true });
+      const payload = await queryAutopilotView();
+      sendJson(res, 200, payload);
+      return;
+    }
+
+    if (req.method === "PUT" && requestUrl.pathname === "/api/chat-ui/autopilot") {
+      assertSameOrigin(req);
+      assertJsonRequest(req);
+      const session = getThreadChatSession(req, { required: true });
+      assertThreadChatCsrf(req, session);
+      const body = await readJsonBody(req);
+      const config = await writeAutopilotConfig(body?.config && typeof body.config === "object" ? body.config : body);
+      const payload = await queryAutopilotView();
+      sendJson(res, 200, { ...payload, config });
+      return;
+    }
+
+    if (req.method === "POST" && requestUrl.pathname === "/api/chat-ui/autopilot/tick") {
+      assertSameOrigin(req);
+      assertJsonRequest(req);
+      const session = getThreadChatSession(req, { required: true });
+      assertThreadChatCsrf(req, session);
+      await readJsonBody(req);
+      const result = await runAutopilotTick();
+      sendJson(res, 200, result);
+      return;
+    }
+
     if (req.method === "GET" && requestUrl.pathname === "/api/chat-ui/threads") {
       getThreadChatSession(req, { required: true });
       const payload = await queryThreadChatThreads(Number(requestUrl.searchParams.get("limit") || MAX_THREAD_LIST));
@@ -2366,3 +2725,9 @@ const server = createServer(async (req, res) => {
 server.listen(PORT, HOST, () => {
   log(`codex-remote-hub listening on http://${HOST}:${PORT}`);
 });
+
+setInterval(() => {
+  runAutopilotTick().catch((error) => {
+    log("autopilot.error", error.stack || error.message);
+  });
+}, AUTOPILOT_TICK_MS);

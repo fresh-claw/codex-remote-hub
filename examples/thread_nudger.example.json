@@ -6,7 +6,7 @@
   "idleMinutes": 15,
   "cooldownMinutes": 30,
   "maxThreadsPerCycle": 1,
-  "maxNudgesPerThreadPerDay": 3,
+  "maxNudgesPerThreadPerDay": 0,
   "recentThreadHours": 48,
   "requireAssistantLast": true,
   "onlyStates": [
