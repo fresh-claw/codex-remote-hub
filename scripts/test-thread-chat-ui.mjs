@@ -96,24 +96,23 @@ async function runRound(browser, round) {
   });
 
   await page.goto(`${baseUrl}/thread-chat`, { waitUntil: "domcontentloaded" });
-  await page.fill("#passwordInput", password);
-  await page.click("#loginButton");
-  await page.waitForSelector("#appShell:not(.hidden)", { timeout: 12000 });
-  await page.click("#autopilotToggleButton");
-  await page.waitForSelector("#autopilotPanel:not(.hidden)", { timeout: 5000 });
-  await page.click("[data-autopilot-preset=\"progress\"]");
-  await page.click("#autopilotAdvancedButton");
-  await page.fill("#autopilotIntervalInput", String(5 + round));
-  await page.click("#autopilotPowerButton");
-  await page.waitForSelector("text=开启", { timeout: 5000 });
-  await page.click("#autopilotRunButton");
+  await page.fill("#login-password", password);
+  await page.click("#login-btn");
+  await page.waitForSelector("#app-container:not(.hidden)", { timeout: 12000 });
+  await page.click("#expand-ap-btn");
+  await page.waitForSelector("#ap-advanced:not(.hidden)", { timeout: 5000 });
+  await page.selectOption("#ap-preset-select", "progress-check");
+  await page.fill("#ap-interval", String(5 + round));
+  await page.click("#toggle-ap-btn");
+  await page.waitForSelector("text=暂停托管", { timeout: 5000 });
+  await page.click("#tick-now-btn");
 
   const metrics = await page.evaluate(() => {
-    const panel = document.querySelector("#autopilotPanel").getBoundingClientRect();
-    const shell = document.querySelector(".chat-shell").getBoundingClientRect();
-    const run = document.querySelector("#autopilotRunButton").getBoundingClientRect();
-    const power = document.querySelector("#autopilotPowerButton").getBoundingClientRect();
-    const advanced = document.querySelector("#autopilotAdvancedFields").getBoundingClientRect();
+    const panel = document.querySelector(".autopilot-header").getBoundingClientRect();
+    const shell = document.querySelector(".main-content").getBoundingClientRect();
+    const run = document.querySelector("#tick-now-btn").getBoundingClientRect();
+    const power = document.querySelector("#toggle-ap-btn").getBoundingClientRect();
+    const advanced = document.querySelector("#ap-advanced").getBoundingClientRect();
     return {
       overflowX: document.documentElement.scrollWidth > window.innerWidth + 2,
       panelW: Math.round(panel.width),
@@ -121,9 +120,9 @@ async function runRound(browser, round) {
       runVisible: run.width > 70 && run.height > 30,
       powerVisible: power.width > 70 && power.height > 30,
       advancedVisible: advanced.width > 0 && advanced.height > 0,
-      presetCount: document.querySelectorAll("[data-autopilot-preset]").length,
-      activeText: document.querySelector(".preset-chip.active strong")?.textContent || "",
-      statusText: document.querySelector("#autopilotStateText")?.textContent || "",
+      presetCount: document.querySelectorAll("#ap-preset-select option").length,
+      activeText: document.querySelector("#ap-preset-select")?.selectedOptions[0]?.textContent || "",
+      statusText: document.querySelector("#toggle-ap-btn")?.textContent || "",
     };
   });
 
@@ -134,7 +133,7 @@ async function runRound(browser, round) {
     && metrics.advancedVisible
     && metrics.presetCount === 3
     && metrics.activeText === "进度巡检"
-    && metrics.statusText === "开启"
+    && metrics.statusText === "暂停托管"
     && errors.length === 0;
 
   return {

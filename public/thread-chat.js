@@ -1,754 +1,370 @@
-const SYNC_INTERVAL_MS = 60 * 1000;
+const App = {
+    state: {
+        authenticated: false,
+        csrfToken: '',
+        threads: [],
+        currentThreadId: null,
+        autopilotConfig: null,
+        refreshTimer: null,
+        isSending: false
+    },
 
-const state = {
-  authenticated: false,
-  csrfToken: "",
-  threads: [],
-  selectedThreadId: null,
-  selectedThread: null,
-  selectedSession: null,
-  syncTimer: null,
-  toastTimer: null,
-  isLoading: false,
-  isSending: false,
-  pendingMessage: null,
-  autopilot: null,
-  autopilotOpen: false,
-  autopilotAdvancedOpen: false,
-  selectedAutopilotPreset: "night",
-  isSavingAutopilot: false,
+    // 预设模式对应的配置片段
+    presets: {
+        'night-default': [
+            { "condition": "idle", "match": "", "message": "继续" },
+            { "condition": "idle", "match": "", "message": "进度？" },
+            { "condition": "idle", "match": "", "message": "请拆下一步并继续执行，完成后说明结果。" }
+        ],
+        'progress-check': [
+            { "condition": "idle", "match": "", "message": "进度？" },
+            { "condition": "idle", "match": "", "message": "如果卡住，请说明卡点和下一步。" },
+            { "condition": "idle", "match": "", "message": "请继续执行下一步。" }
+        ],
+        'step-runner': [
+            { "condition": "idle", "match": "", "message": "请把剩余任务拆成下一小步，并直接执行。" },
+            { "condition": "idle", "match": "", "message": "继续执行下一小步，完成后报告结果。" },
+            { "condition": "idle", "match": "", "message": "如果发现问题，请先修复再继续。" }
+        ]
+    },
+
+    async init() {
+        this.cacheDOM();
+        this.bindEvents();
+        await this.checkSession();
+        if (this.state.authenticated) {
+            this.startPolling();
+        }
+    },
+
+    cacheDOM() {
+        this.dom = {
+            loginOverlay: document.getElementById('login-overlay'),
+            appContainer: document.getElementById('app-container'),
+            loginPass: document.getElementById('login-password'),
+            loginBtn: document.getElementById('login-btn'),
+            threadList: document.getElementById('thread-list'),
+            messagesContainer: document.getElementById('messages-container'),
+            chatBody: document.getElementById('chat-body'),
+            chatWelcome: document.getElementById('chat-welcome'),
+            chatInput: document.getElementById('chat-input'),
+            sendBtn: document.getElementById('send-btn'),
+            apHeader: document.querySelector('.autopilot-header'),
+            apStatusDot: document.getElementById('ap-status-dot'),
+            apModeName: document.getElementById('ap-mode-name'),
+            toggleApBtn: document.getElementById('toggle-ap-btn'),
+            tickNowBtn: document.getElementById('tick-now-btn'),
+            expandApBtn: document.getElementById('expand-ap-btn'),
+            apAdvanced: document.getElementById('ap-advanced'),
+            sidebar: document.getElementById('sidebar'),
+            mobileMenuBtn: document.getElementById('mobile-menu-btn'),
+            toastContainer: document.getElementById('toast-container'),
+            refreshBtn: document.getElementById('refresh-btn'),
+            logoutBtn: document.getElementById('logout-btn'),
+            saveApBtn: document.getElementById('save-ap-btn'),
+            presetSelect: document.getElementById('ap-preset-select'),
+            intervalInput: document.getElementById('ap-interval'),
+            maxThreadsInput: document.getElementById('ap-max-threads'),
+            patternsInput: document.getElementById('ap-patterns')
+        };
+    },
+
+    bindEvents() {
+        this.dom.loginBtn.onclick = () => this.login();
+        this.dom.sendBtn.onclick = () => this.sendMessage();
+        this.dom.refreshBtn.onclick = () => this.refreshAll();
+        this.dom.logoutBtn.onclick = () => this.logout();
+
+        // 托管控制
+        this.dom.expandApBtn.onclick = () => this.dom.apAdvanced.classList.toggle('hidden');
+        this.dom.toggleApBtn.onclick = () => this.toggleAutopilot();
+        this.dom.tickNowBtn.onclick = () => this.tickNow();
+        this.dom.saveApBtn.onclick = () => this.saveAutopilotConfig();
+
+        // 快捷回复
+        document.querySelectorAll('.quick-btn[data-msg]').forEach(btn => {
+            btn.onclick = () => {
+                this.dom.chatInput.value = btn.dataset.msg;
+                this.sendMessage();
+            };
+        });
+
+        // 移动端菜单
+        this.dom.mobileMenuBtn.onclick = () => this.dom.sidebar.classList.toggle('open');
+
+        // 输入框回车
+        this.dom.chatInput.onkeydown = (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                this.sendMessage();
+            }
+        };
+    },
+
+    async request(path, options = {}) {
+        const url = this.withBase(path);
+        const defaultHeaders = new Headers(options.headers || {});
+        if (options.body && !defaultHeaders.has('Content-Type')) {
+            defaultHeaders.set('Content-Type', 'application/json');
+        }
+        if (this.state.csrfToken) {
+            defaultHeaders.set('x-thread-chat-csrf', this.state.csrfToken);
+        }
+
+        try {
+            const res = await fetch(url, {
+                credentials: 'same-origin',
+                ...options,
+                headers: defaultHeaders,
+            });
+            const text = await res.text();
+            let data = {};
+            if (text) {
+                try {
+                    data = JSON.parse(text);
+                } catch {
+                    data = { error: text };
+                }
+            }
+            if (!res.ok) throw new Error(data.error || data.message || `请求失败 (${res.status})`);
+            return data;
+        } catch (err) {
+            this.showToast(err.message);
+            throw err;
+        }
+    },
+
+    withBase(path) {
+        if (path.startsWith('http')) return path;
+        const pathname = window.location.pathname;
+        const suffixes = ['/thread-chat', '/thread-chat.html'];
+        const suffix = suffixes.find(item => pathname.endsWith(item));
+        if (!suffix) return path;
+        const prefix = pathname.slice(0, -suffix.length);
+        return `${prefix === '/' ? '' : prefix}${path}`;
+    },
+
+    showToast(msg) {
+        const t = document.createElement('div');
+        t.className = 'toast';
+        t.innerText = msg;
+        this.dom.toastContainer.appendChild(t);
+        setTimeout(() => t.remove(), 3000);
+    },
+
+    async checkSession() {
+        const data = await this.request('/api/chat-ui/session');
+        if (data.authenticated) {
+            this.state.authenticated = true;
+            this.state.csrfToken = data.csrfToken;
+            this.dom.loginOverlay.classList.add('hidden');
+            this.dom.appContainer.classList.remove('hidden');
+            this.refreshAll();
+        } else {
+            this.dom.loginOverlay.classList.remove('hidden');
+            this.dom.appContainer.classList.add('hidden');
+        }
+    },
+
+    async login() {
+        const password = this.dom.loginPass.value;
+        const data = await this.request('/api/chat-ui/login', {
+            method: 'POST',
+            body: JSON.stringify({ password })
+        });
+        this.state.authenticated = true;
+        this.state.csrfToken = data.csrfToken;
+        this.dom.loginPass.value = '';
+        this.dom.loginOverlay.classList.add('hidden');
+        this.dom.appContainer.classList.remove('hidden');
+        this.startPolling();
+        this.refreshAll();
+    },
+
+    async logout() {
+        await this.request('/api/chat-ui/logout', { method: 'POST', body: JSON.stringify({}) });
+        location.reload();
+    },
+
+    async refreshAll() {
+        await Promise.all([this.loadThreads(), this.loadAutopilot()]);
+        if (this.state.currentThreadId) {
+            this.loadThreadDetail(this.state.currentThreadId);
+        }
+    },
+
+    startPolling() {
+        if (this.state.refreshTimer) clearInterval(this.state.refreshTimer);
+        this.state.refreshTimer = setInterval(() => this.refreshAll(), 60000);
+    },
+
+    async loadThreads() {
+        const data = await this.request('/api/chat-ui/threads');
+        this.state.threads = data.threads;
+        this.renderThreadList();
+    },
+
+    renderThreadList() {
+        this.dom.threadList.innerHTML = '';
+        if (!this.state.threads.length) {
+            const empty = document.createElement('div');
+            empty.className = 'thread-empty';
+            empty.textContent = '暂无线程';
+            this.dom.threadList.appendChild(empty);
+            return;
+        }
+        for (const thread of this.state.threads) {
+            const item = document.createElement('button');
+            item.type = 'button';
+            item.className = `thread-item ${this.state.currentThreadId === thread.id ? 'active' : ''}`;
+            item.innerHTML = `
+                <div class="title"></div>
+                <div class="preview"></div>
+                <div class="meta">
+                    <span></span>
+                    <span></span>
+                </div>
+            `;
+            item.querySelector('.title').textContent = thread.title || '未命名线程';
+            item.querySelector('.preview').textContent = thread.preview || '';
+            item.querySelector('.meta span:first-child').textContent = thread.stateLabel || '';
+            item.querySelector('.meta span:last-child').textContent = this.formatTime(thread.updatedAt || thread.lastActiveAt);
+            item.onclick = () => this.selectThread(thread.id);
+            this.dom.threadList.appendChild(item);
+        }
+    },
+
+    selectThread(id) {
+        this.state.currentThreadId = id;
+        this.renderThreadList();
+        this.loadThreadDetail(id);
+        this.dom.sidebar.classList.remove('open'); // 移动端自动收起
+    },
+
+    async loadThreadDetail(id) {
+        const data = await this.request(`/api/chat-ui/threads/${id}`);
+        this.renderMessages(data.session?.messages || []);
+        this.dom.chatWelcome.classList.add('hidden');
+    },
+
+    renderMessages(messages) {
+        this.dom.messagesContainer.innerHTML = '';
+        for (const message of messages) {
+            const row = document.createElement('div');
+            row.className = `msg-row ${message.role || 'system'}`;
+            const bubble = document.createElement('div');
+            bubble.className = 'msg-bubble';
+            bubble.textContent = message.text || '';
+            const time = document.createElement('div');
+            time.className = 'msg-time';
+            time.textContent = this.formatTime(message.timestamp);
+            row.appendChild(bubble);
+            row.appendChild(time);
+            this.dom.messagesContainer.appendChild(row);
+        }
+        this.dom.chatBody.scrollTop = this.dom.chatBody.scrollHeight;
+    },
+
+    async sendMessage() {
+        const msg = this.dom.chatInput.value.trim();
+        if (!msg || !this.state.currentThreadId || this.state.isSending) return;
+
+        this.state.isSending = true;
+        this.dom.sendBtn.disabled = true;
+        this.dom.chatInput.value = '';
+        try {
+            await this.request(`/api/chat-ui/threads/${this.state.currentThreadId}/messages`, {
+                method: 'POST',
+                body: JSON.stringify({ message: msg })
+            });
+            await this.loadThreadDetail(this.state.currentThreadId);
+        } finally {
+            this.state.isSending = false;
+            this.dom.sendBtn.disabled = false;
+        }
+    },
+
+    async loadAutopilot() {
+        const data = await this.request('/api/chat-ui/autopilot');
+        this.state.autopilotConfig = data.config;
+        this.renderAutopilotUI();
+    },
+
+    renderAutopilotUI() {
+        const cfg = this.state.autopilotConfig;
+        if (!cfg) return;
+        const isActive = cfg.enabled;
+
+        this.dom.apStatusDot.className = `status-dot ${isActive ? 'active' : ''}`;
+        const currentScriptName = (cfg.scripts && cfg.scripts[0]) ? cfg.scripts[0].name : '无';
+        this.dom.apModeName.innerText = isActive ? currentScriptName : '暂停中';
+        this.dom.toggleApBtn.innerText = isActive ? '暂停托管' : '开启托管';
+
+        // 填充高级面板
+        this.dom.intervalInput.value = cfg.intervalMinutes || 15;
+        this.dom.maxThreadsInput.value = cfg.maxThreadsPerTick || 2;
+        this.dom.patternsInput.value = (cfg.completionPatterns || []).join(', ');
+        if (cfg.scripts && cfg.scripts[0]) {
+            this.dom.presetSelect.value = cfg.scripts[0].id;
+        }
+    },
+
+    async toggleAutopilot() {
+        const newEnabled = !this.state.autopilotConfig.enabled;
+        this.state.autopilotConfig.enabled = newEnabled;
+        await this.saveAutopilotConfig();
+        this.showToast(newEnabled ? '托管已开启' : '托管已暂停');
+    },
+
+    async saveAutopilotConfig() {
+        const presetId = this.dom.presetSelect.value;
+        const presetName = this.dom.presetSelect.selectedOptions[0].text;
+
+        const newConfig = {
+            ...this.state.autopilotConfig,
+            intervalMinutes: parseInt(this.dom.intervalInput.value, 10) || 15,
+            maxThreadsPerTick: parseInt(this.dom.maxThreadsInput.value, 10) || 2,
+            completionPatterns: this.dom.patternsInput.value.split(',').map(s => s.trim()).filter(Boolean),
+            scripts: [{
+                id: presetId,
+                name: presetName,
+                enabled: true,
+                mode: "sequence",
+                steps: this.presets[presetId]
+            }]
+        };
+
+        const data = await this.request('/api/chat-ui/autopilot', {
+            method: 'PUT',
+            body: JSON.stringify({ config: newConfig })
+        });
+        this.state.autopilotConfig = data.config;
+        this.renderAutopilotUI();
+        this.showToast('托管设置已保存');
+    },
+
+    async tickNow() {
+        if (!this.state.autopilotConfig.enabled) {
+            this.state.autopilotConfig.enabled = true;
+            await this.saveAutopilotConfig();
+        }
+        const data = await this.request('/api/chat-ui/autopilot/tick', { method: 'POST', body: JSON.stringify({}) });
+        this.showToast(`执行完成：发送 ${data.sent?.length || 0} 条，跳过 ${data.skipped?.length || 0} 条`);
+        this.refreshAll();
+    },
+
+    formatTime(value) {
+        if (!value) return '--';
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) return '--';
+        return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    },
+
+    escapeHTML(str) {
+        const p = document.createElement('p');
+        p.textContent = str;
+        return p.innerHTML;
+    }
 };
 
-const AUTOPILOT_PRESETS = {
-  night: {
-    id: "night-default",
-    name: "夜间继续",
-    summary: "15 分钟无变化后，按顺序发送继续和进度类消息。",
-    steps: ["继续", "进度？", "请拆下一步并继续执行，完成后说明结果。"],
-  },
-  progress: {
-    id: "progress-check",
-    name: "进度巡检",
-    summary: "先问当前进度，再要求说明卡点和下一步。",
-    steps: ["进度？", "如果卡住，请说明卡点和下一步。", "请继续执行下一步。"],
-  },
-  step: {
-    id: "step-runner",
-    name: "拆步执行",
-    summary: "适合复杂任务，要求 Codex 拆成小步持续完成。",
-    steps: ["请把剩余任务拆成下一小步，并直接执行。", "继续执行下一小步，完成后报告结果。", "如果发现问题，请先修复再继续。"],
-  },
-};
-
-const routeBase = (() => {
-  const pathname = window.location.pathname;
-  const knownSuffixes = ["/thread-chat", "/thread-chat.html"];
-  const matched = knownSuffixes.find((suffix) => pathname.endsWith(suffix));
-  if (!matched) return "";
-  const prefix = pathname.slice(0, -matched.length);
-  return prefix === "/" ? "" : prefix;
-})();
-
-function withBase(pathname) {
-  return `${routeBase}${pathname}`;
-}
-
-const loginGate = document.getElementById("loginGate");
-const loginForm = document.getElementById("loginForm");
-const passwordInput = document.getElementById("passwordInput");
-const loginButton = document.getElementById("loginButton");
-const loginError = document.getElementById("loginError");
-const appShell = document.getElementById("appShell");
-const sidebarBackdrop = document.getElementById("sidebarBackdrop");
-const mobileThreadButton = document.getElementById("mobileThreadButton");
-const sidebarCloseButton = document.getElementById("sidebarCloseButton");
-const logoutButton = document.getElementById("logoutButton");
-const refreshButton = document.getElementById("refreshButton");
-const syncBadge = document.getElementById("syncBadge");
-const threadCountLabel = document.getElementById("threadCountLabel");
-const threadList = document.getElementById("threadList");
-const threadStateLabel = document.getElementById("threadStateLabel");
-const threadTitle = document.getElementById("threadTitle");
-const threadActiveAt = document.getElementById("threadActiveAt");
-const threadCanSend = document.getElementById("threadCanSend");
-const autopilotToggleButton = document.getElementById("autopilotToggleButton");
-const autopilotPanel = document.getElementById("autopilotPanel");
-const autopilotSummary = document.getElementById("autopilotSummary");
-const autopilotStateText = document.getElementById("autopilotStateText");
-const autopilotModeText = document.getElementById("autopilotModeText");
-const autopilotPresetList = document.getElementById("autopilotPresetList");
-const autopilotPowerButton = document.getElementById("autopilotPowerButton");
-const autopilotAdvancedButton = document.getElementById("autopilotAdvancedButton");
-const autopilotAdvancedFields = document.getElementById("autopilotAdvancedFields");
-const autopilotIntervalInput = document.getElementById("autopilotIntervalInput");
-const autopilotCooldownInput = document.getElementById("autopilotCooldownInput");
-const autopilotMaxThreadsInput = document.getElementById("autopilotMaxThreadsInput");
-const autopilotStepsInput = document.getElementById("autopilotStepsInput");
-const autopilotDoneInput = document.getElementById("autopilotDoneInput");
-const autopilotRunButton = document.getElementById("autopilotRunButton");
-const autopilotStatus = document.getElementById("autopilotStatus");
-const messageList = document.getElementById("messageList");
-const composerInput = document.getElementById("composerInput");
-const sendButton = document.getElementById("sendButton");
-const composerStatus = document.getElementById("composerStatus");
-const quickButtons = Array.from(document.querySelectorAll("[data-quick-message]"));
-const toast = document.getElementById("toast");
-
-function syncViewportHeight() {
-  const viewportHeight = window.visualViewport?.height || window.innerHeight;
-  document.documentElement.style.setProperty("--viewport-height", `${Math.round(viewportHeight)}px`);
-}
-
-function settleViewportAfterKeyboard() {
-  window.setTimeout(() => {
-    syncViewportHeight();
-    composerInput.scrollIntoView({
-      block: "nearest",
-      inline: "nearest",
-    });
-  }, 120);
-}
-
-function escapeHtml(value) {
-  return String(value || "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
-}
-
-function shorten(value, max = 72) {
-  const text = String(value || "").trim();
-  if (text.length <= max) return text;
-  return `${text.slice(0, max - 1)}…`;
-}
-
-function threadInitial(value) {
-  const text = String(value || "").trim();
-  if (!text) return "C";
-  const first = Array.from(text)[0] || "C";
-  return first.toUpperCase();
-}
-
-function roleLabel(role) {
-  if (role === "user") return "你";
-  if (role === "assistant") return "Codex";
-  return "系统";
-}
-
-function statusTone(stateValue) {
-  if (stateValue === "running") return "state-running";
-  if (stateValue === "dead") return "state-dead";
-  return "state-waiting";
-}
-
-function relativeTime(value) {
-  if (!value) return "--";
-  const timestamp = new Date(value).getTime();
-  if (!Number.isFinite(timestamp)) return "--";
-  const diff = Date.now() - timestamp;
-  if (diff < 60_000) return "刚刚";
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`;
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`;
-  return `${Math.floor(diff / 86_400_000)} 天前`;
-}
-
-function timeStamp(value) {
-  if (!value) return "--";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "--";
-  return date.toLocaleString("zh-TW", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
-
-function isNearBottom(element, threshold = 80) {
-  return element.scrollHeight - element.scrollTop - element.clientHeight <= threshold;
-}
-
-async function fetchJson(pathname, options = {}) {
-  const headers = new Headers(options.headers || {});
-  const method = String(options.method || "GET").toUpperCase();
-  if (options.body && !headers.has("Content-Type")) {
-    headers.set("Content-Type", "application/json");
-  }
-  if (method !== "GET" && method !== "HEAD" && state.csrfToken) {
-    headers.set("x-thread-chat-csrf", state.csrfToken);
-  }
-
-  const response = await fetch(withBase(pathname), {
-    credentials: "same-origin",
-    ...options,
-    headers,
-  });
-
-  const text = await response.text();
-  let payload = null;
-  if (text) {
-    try {
-      payload = JSON.parse(text);
-    } catch {
-      payload = text;
-    }
-  }
-
-  if (!response.ok) {
-    const message = typeof payload === "object" && payload?.error
-      ? payload.error
-      : `Request failed (${response.status})`;
-    const error = new Error(message);
-    error.status = response.status;
-    throw error;
-  }
-
-  return payload;
-}
-
-function showToast(message) {
-  window.clearTimeout(state.toastTimer);
-  toast.textContent = message;
-  toast.classList.remove("hidden");
-  state.toastTimer = window.setTimeout(() => {
-    toast.classList.add("hidden");
-  }, 2400);
-}
-
-function isMobileLayout() {
-  return window.matchMedia("(max-width: 960px)").matches;
-}
-
-function closeSidebarDrawer() {
-  appShell.classList.remove("sidebar-open");
-  sidebarBackdrop.classList.add("hidden");
-}
-
-function openSidebarDrawer() {
-  if (!isMobileLayout()) return;
-  appShell.classList.add("sidebar-open");
-  sidebarBackdrop.classList.remove("hidden");
-  window.requestAnimationFrame(() => {
-    document.querySelector(".thread-item.active")?.scrollIntoView({
-      block: "nearest",
-      inline: "nearest",
-    });
-  });
-}
-
-function syncSidebarDrawer() {
-  if (!isMobileLayout()) {
-    closeSidebarDrawer();
-  }
-}
-
-function setAuthenticated(authenticated) {
-  state.authenticated = authenticated;
-  loginGate.classList.toggle("hidden", authenticated);
-  appShell.classList.toggle("hidden", !authenticated);
-  if (!authenticated) {
-    closeSidebarDrawer();
-  }
-}
-
-function setComposerState(canSend) {
-  const enabled = canSend && !state.isSending;
-  composerInput.disabled = !enabled;
-  sendButton.disabled = !enabled;
-  quickButtons.forEach((button) => {
-    button.disabled = !enabled;
-  });
-
-  if (state.isSending) {
-    threadCanSend.textContent = "发送中";
-    threadCanSend.className = "send-badge pending";
-    composerStatus.textContent = "正在把消息发给这个线程";
-    sendButton.textContent = "发送中...";
-    composerInput.placeholder = "正在发送，请稍候";
-    return;
-  }
-
-  threadCanSend.textContent = canSend ? "可发送" : "执行中";
-  threadCanSend.className = `send-badge ${canSend ? "ready" : "blocked"}`;
-  composerStatus.textContent = canSend ? "按 ⌘/Ctrl + Enter 发送" : "这个线程正在跑，等这一轮结束后再发";
-  sendButton.textContent = "发送";
-  composerInput.placeholder = canSend ? "直接向当前线程发送消息" : "当前线程仍在执行，等这一轮结束后再发送";
-}
-
-function linesFromTextarea(value) {
-  return String(value || "")
-    .split("\n")
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
-function getCurrentAutopilotConfig() {
-  return state.autopilot?.config || {};
-}
-
-function presetFromConfig(config = {}) {
-  const script = config.scripts?.[0] || {};
-  const scriptId = String(script.id || "");
-  const matched = Object.entries(AUTOPILOT_PRESETS).find(([, preset]) => preset.id === scriptId);
-  return matched?.[0] || state.selectedAutopilotPreset || "night";
-}
-
-function renderAutopilotPanel() {
-  const payload = state.autopilot;
-  const config = getCurrentAutopilotConfig();
-  const script = config.scripts?.[0] || {};
-  const steps = Array.isArray(script.steps) ? script.steps : [];
-  const presetKey = presetFromConfig(config);
-  const preset = AUTOPILOT_PRESETS[presetKey] || AUTOPILOT_PRESETS.night;
-  state.selectedAutopilotPreset = presetKey;
-
-  autopilotPanel.classList.toggle("hidden", !state.autopilotOpen);
-  autopilotToggleButton.classList.toggle("active", state.autopilotOpen);
-  autopilotAdvancedFields.classList.toggle("hidden", !state.autopilotAdvancedOpen);
-  autopilotStateText.textContent = config.enabled ? "开启" : "关闭";
-  autopilotStateText.className = config.enabled ? "autopilot-on" : "autopilot-off";
-  autopilotModeText.textContent = preset.name;
-  autopilotSummary.textContent = preset.summary;
-  autopilotPowerButton.textContent = config.enabled ? "暂停托管" : "开启托管";
-  autopilotPowerButton.classList.toggle("danger-button", config.enabled === true);
-  autopilotAdvancedButton.textContent = state.autopilotAdvancedOpen ? "收起设置" : "高级设置";
-  autopilotIntervalInput.value = String(config.intervalMinutes || 15);
-  autopilotCooldownInput.value = String(config.cooldownMinutes || 15);
-  autopilotMaxThreadsInput.value = String(config.maxThreadsPerTick || 2);
-  autopilotStepsInput.value = steps.map((step) => step.message).filter(Boolean).join("\n") || preset.steps.join("\n");
-  autopilotDoneInput.value = (config.completionPatterns || []).join("\n");
-  for (const button of autopilotPresetList.querySelectorAll("[data-autopilot-preset]")) {
-    button.classList.toggle("active", button.dataset.autopilotPreset === presetKey);
-  }
-  autopilotStatus.textContent = payload?.state?.lastTickAt
-    ? `上次执行 ${timeStamp(payload.state.lastTickAt)}`
-    : "尚未执行";
-}
-
-function buildAutopilotConfig({ enabled = getCurrentAutopilotConfig().enabled === true, presetKey = state.selectedAutopilotPreset } = {}) {
-  const current = getCurrentAutopilotConfig();
-  const preset = AUTOPILOT_PRESETS[presetKey] || AUTOPILOT_PRESETS.night;
-  const customSteps = linesFromTextarea(autopilotStepsInput.value);
-  const steps = state.autopilotAdvancedOpen && customSteps.length ? customSteps : preset.steps;
-  return {
-    ...current,
-    enabled,
-    intervalMinutes: Number(autopilotIntervalInput.value) || 15,
-    cooldownMinutes: Number(autopilotCooldownInput.value) || 15,
-    maxThreadsPerTick: Number(autopilotMaxThreadsInput.value) || 2,
-    completionPatterns: linesFromTextarea(autopilotDoneInput.value),
-    scripts: [
-      {
-        id: preset.id,
-        name: preset.name,
-        enabled: true,
-        mode: "sequence",
-        steps: steps.map((message) => ({
-          condition: "idle",
-          message,
-        })),
-      },
-    ],
-  };
-}
-
-async function saveAutopilotConfig(config, toastMessage = "托管设置已更新") {
-  state.autopilot = await fetchJson("/api/chat-ui/autopilot", {
-    method: "PUT",
-    body: JSON.stringify({ config }),
-  });
-  renderAutopilotPanel();
-  showToast(toastMessage);
-  return state.autopilot;
-}
-
-async function loadAutopilot() {
-  if (!state.authenticated) return;
-  state.autopilot = await fetchJson("/api/chat-ui/autopilot");
-  renderAutopilotPanel();
-}
-
-async function saveAutopilot() {
-  if (state.isSavingAutopilot) return;
-  state.isSavingAutopilot = true;
-  autopilotPowerButton.disabled = true;
-  autopilotRunButton.disabled = true;
-  try {
-    await saveAutopilotConfig(buildAutopilotConfig(), "托管设置已保存");
-  } finally {
-    state.isSavingAutopilot = false;
-    autopilotPowerButton.disabled = false;
-    autopilotRunButton.disabled = false;
-  }
-}
-
-async function runAutopilotNow() {
-  autopilotRunButton.disabled = true;
-  autopilotRunButton.textContent = "执行中...";
-  try {
-    if (!getCurrentAutopilotConfig().enabled) {
-      await saveAutopilotConfig(buildAutopilotConfig({ enabled: true }), "已开启托管");
-    }
-    const result = await fetchJson("/api/chat-ui/autopilot/tick", {
-      method: "POST",
-      body: JSON.stringify({}),
-    });
-    const sentCount = result.sent?.length || 0;
-    showToast(sentCount ? `已推进 ${sentCount} 个线程` : "没有符合条件的线程");
-    await loadAutopilot();
-    await refreshAll({ forceScroll: false });
-  } finally {
-    autopilotRunButton.disabled = false;
-    autopilotRunButton.textContent = "立即执行一次";
-  }
-}
-
-function renderThreads() {
-  threadList.innerHTML = "";
-  threadCountLabel.textContent = `${state.threads.length} 个线程`;
-  if (mobileThreadButton) {
-    mobileThreadButton.textContent = `切换线程 · ${state.threads.length}`;
-  }
-
-  if (!state.threads.length) {
-    const empty = document.createElement("div");
-    empty.className = "thread-item";
-    empty.textContent = "还没有可显示的线程。";
-    threadList.appendChild(empty);
-    return;
-  }
-
-  for (const thread of state.threads) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = `thread-item${thread.id === state.selectedThreadId ? " active" : ""}`;
-    button.title = thread.title || "未命名线程";
-    button.innerHTML = `
-      <div class="thread-item-avatar">${escapeHtml(threadInitial(thread.title))}</div>
-      <div class="thread-item-content">
-        <div class="thread-item-head">
-          <span class="thread-item-title">${escapeHtml(shorten(thread.title, 36))}</span>
-          <span class="thread-item-time">${escapeHtml(relativeTime(thread.lastActiveAt || thread.updatedAt))}</span>
-        </div>
-        <div class="thread-item-meta">
-          <span class="status-dot ${statusTone(thread.state)}"></span>
-          <span class="thread-item-state">${escapeHtml(thread.stateLabel || "等待中")}</span>
-        </div>
-      </div>
-    `;
-    button.addEventListener("click", () => {
-      if (thread.id === state.selectedThreadId) return;
-      state.selectedThreadId = thread.id;
-      renderThreads();
-      closeSidebarDrawer();
-      loadThread(thread.id, { forceScroll: true }).catch((error) => showToast(error.message));
-    });
-    threadList.appendChild(button);
-  }
-}
-
-function renderMessages(messages, { forceScroll = false } = {}) {
-  const shouldStick = forceScroll || isNearBottom(messageList);
-  const visibleMessages = state.pendingMessage
-    ? [...messages, state.pendingMessage]
-    : [...messages];
-  if (!visibleMessages.length) {
-    messageList.className = "message-list empty";
-    messageList.textContent = "这个线程还没有可显示的对话内容。";
-    return;
-  }
-
-  messageList.className = "message-list";
-  messageList.innerHTML = "";
-
-  for (const message of visibleMessages) {
-    const article = document.createElement("article");
-    article.className = `message-row ${message.role}${message.pending ? " pending" : ""}`;
-    article.innerHTML = `
-      <div class="message-avatar ${message.role}">${escapeHtml(roleLabel(message.role).slice(0, 1))}</div>
-      <div class="message-bubble">
-        <div class="message-meta">
-          <span class="message-role">${escapeHtml(roleLabel(message.role))}</span>
-          <span>${escapeHtml(message.pending ? "发送中…" : timeStamp(message.timestamp))}</span>
-        </div>
-        <div class="message-body">${escapeHtml(message.text || "")}</div>
-      </div>
-    `;
-    messageList.appendChild(article);
-  }
-
-  if (shouldStick) {
-    messageList.scrollTop = messageList.scrollHeight;
-  }
-}
-
-function renderSelectedThread() {
-  const thread = state.selectedThread;
-  if (!thread) {
-    threadStateLabel.textContent = "等待选择线程";
-    threadTitle.textContent = "选择左侧线程";
-    threadActiveAt.textContent = "最后活动 --";
-    composerStatus.textContent = "先选择一个线程";
-    setComposerState(false);
-    renderMessages([]);
-    return;
-  }
-
-  threadStateLabel.textContent = thread.stateLabel || "等待中";
-  threadTitle.textContent = thread.title || "未命名线程";
-  threadActiveAt.textContent = `最后活动 ${relativeTime(thread.lastActiveAt || thread.updatedAt)}`;
-  if (mobileThreadButton) {
-    mobileThreadButton.textContent = `切换线程 · ${state.threads.length}`;
-  }
-  setComposerState(Boolean(thread.canSend));
-}
-
-async function loadThreads({ keepSelection = true } = {}) {
-  const payload = await fetchJson("/api/chat-ui/threads");
-  state.threads = payload.threads || [];
-  syncBadge.textContent = `同步于 ${timeStamp(payload.serverTime || new Date().toISOString())}`;
-
-  if (!keepSelection || !state.selectedThreadId || !state.threads.some((thread) => thread.id === state.selectedThreadId)) {
-    state.selectedThreadId = state.threads[0]?.id || null;
-  }
-
-  renderThreads();
-}
-
-async function loadThread(threadId, { forceScroll = false } = {}) {
-  if (!threadId) return;
-  const payload = await fetchJson(`/api/chat-ui/threads/${encodeURIComponent(threadId)}`);
-  state.selectedThread = payload.thread;
-  state.selectedSession = payload.session;
-  renderSelectedThread();
-  renderMessages(payload.session?.messages || [], { forceScroll });
-  renderThreads();
-}
-
-async function refreshAll({ forceScroll = false } = {}) {
-  if (!state.authenticated || state.isLoading) return;
-  state.isLoading = true;
-  refreshButton.disabled = true;
-  refreshButton.textContent = "同步中...";
-  try {
-    await loadThreads();
-    if (state.selectedThreadId) {
-      await loadThread(state.selectedThreadId, { forceScroll });
-    } else {
-      state.selectedThread = null;
-      state.selectedSession = null;
-      renderSelectedThread();
-    }
-    if (state.autopilotOpen) {
-      await loadAutopilot();
-    }
-  } finally {
-    state.isLoading = false;
-    refreshButton.disabled = false;
-    refreshButton.textContent = "刷新";
-  }
-}
-
-async function sendMessage(message) {
-  const threadId = state.selectedThreadId;
-  const content = String(message || "").trim();
-  if (!threadId || !content) return;
-
-  state.isSending = true;
-  state.pendingMessage = {
-    role: "user",
-    text: content,
-    timestamp: new Date().toISOString(),
-    pending: true,
-  };
-  renderSelectedThread();
-  renderMessages(state.selectedSession?.messages || [], { forceScroll: true });
-
-  try {
-    await fetchJson(`/api/chat-ui/threads/${encodeURIComponent(threadId)}/messages`, {
-      method: "POST",
-      body: JSON.stringify({ message: content }),
-    });
-
-    composerInput.value = "";
-    showToast("消息已发给对应线程");
-    await refreshAll({ forceScroll: true });
-  } catch (error) {
-    state.pendingMessage = null;
-    renderMessages(state.selectedSession?.messages || [], { forceScroll: true });
-    throw error;
-  } finally {
-    state.isSending = false;
-    state.pendingMessage = null;
-    renderSelectedThread();
-  }
-}
-
-function startAutoSync() {
-  if (state.syncTimer) {
-    window.clearInterval(state.syncTimer);
-  }
-  state.syncTimer = window.setInterval(() => {
-    refreshAll().catch((error) => {
-      if (error.status === 401) {
-        setAuthenticated(false);
-        state.csrfToken = "";
-        return;
-      }
-      console.error(error);
-    });
-  }, SYNC_INTERVAL_MS);
-}
-
-async function bootstrap() {
-  try {
-    const payload = await fetchJson("/api/chat-ui/session");
-    if (!payload?.authenticated) {
-      setAuthenticated(false);
-      passwordInput.focus();
-      return;
-    }
-
-    state.csrfToken = payload.csrfToken || "";
-    setAuthenticated(true);
-    await refreshAll({ forceScroll: true });
-    await loadAutopilot();
-    startAutoSync();
-  } catch (error) {
-    console.error(error);
-    loginError.textContent = "无法连接本地服务，请稍后再试。";
-    setAuthenticated(false);
-  }
-}
-
-loginForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  loginError.textContent = "";
-  loginButton.disabled = true;
-
-  try {
-    const payload = await fetchJson("/api/chat-ui/login", {
-      method: "POST",
-      body: JSON.stringify({ password: passwordInput.value }),
-    });
-    state.csrfToken = payload.csrfToken || "";
-    passwordInput.value = "";
-    setAuthenticated(true);
-    await refreshAll({ forceScroll: true });
-    await loadAutopilot();
-    startAutoSync();
-  } catch (error) {
-    loginError.textContent = error.message || "登录失败";
-    passwordInput.select();
-  } finally {
-    loginButton.disabled = false;
-  }
-});
-
-logoutButton.addEventListener("click", async () => {
-  try {
-    await fetchJson("/api/chat-ui/logout", {
-      method: "POST",
-      body: JSON.stringify({}),
-    });
-  } catch (error) {
-    console.error(error);
-  }
-  window.clearInterval(state.syncTimer);
-  state.syncTimer = null;
-  state.csrfToken = "";
-  state.selectedThreadId = null;
-  state.selectedThread = null;
-  state.selectedSession = null;
-  setAuthenticated(false);
-  renderSelectedThread();
-  passwordInput.focus();
-});
-
-mobileThreadButton?.addEventListener("click", () => {
-  if (appShell.classList.contains("sidebar-open")) {
-    closeSidebarDrawer();
-    return;
-  }
-  openSidebarDrawer();
-});
-
-sidebarCloseButton?.addEventListener("click", () => {
-  closeSidebarDrawer();
-});
-
-sidebarBackdrop?.addEventListener("click", () => {
-  closeSidebarDrawer();
-});
-
-refreshButton.addEventListener("click", () => {
-  refreshAll().catch((error) => showToast(error.message));
-});
-
-autopilotToggleButton.addEventListener("click", () => {
-    state.autopilotOpen = !state.autopilotOpen;
-    renderAutopilotPanel();
-    if (state.autopilotOpen && !state.autopilot) {
-    loadAutopilot().catch((error) => showToast(error.message));
-  }
-});
-
-autopilotPresetList.addEventListener("click", (event) => {
-  const button = event.target.closest("[data-autopilot-preset]");
-  if (!button) return;
-  state.selectedAutopilotPreset = button.dataset.autopilotPreset || "night";
-  const preset = AUTOPILOT_PRESETS[state.selectedAutopilotPreset] || AUTOPILOT_PRESETS.night;
-  autopilotStepsInput.value = preset.steps.join("\n");
-  saveAutopilotConfig(buildAutopilotConfig({ presetKey: state.selectedAutopilotPreset }), `已切换为${preset.name}`)
-    .catch((error) => showToast(error.message));
-});
-
-autopilotPowerButton.addEventListener("click", () => {
-  const nextEnabled = !(getCurrentAutopilotConfig().enabled === true);
-  saveAutopilotConfig(
-    buildAutopilotConfig({ enabled: nextEnabled }),
-    nextEnabled ? "托管已开启" : "托管已暂停",
-  ).catch((error) => showToast(error.message));
-});
-
-autopilotAdvancedButton.addEventListener("click", () => {
-  state.autopilotAdvancedOpen = !state.autopilotAdvancedOpen;
-  renderAutopilotPanel();
-});
-
-autopilotRunButton.addEventListener("click", () => {
-  saveAutopilot()
-    .then(runAutopilotNow)
-    .catch((error) => showToast(error.message));
-});
-
-sendButton.addEventListener("click", () => {
-  sendMessage(composerInput.value).catch((error) => showToast(error.message));
-});
-
-quickButtons.forEach((button) => {
-  button.addEventListener("click", () => {
-    sendMessage(button.dataset.quickMessage || "").catch((error) => showToast(error.message));
-  });
-});
-
-composerInput.addEventListener("keydown", (event) => {
-  if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
-    event.preventDefault();
-    sendMessage(composerInput.value).catch((error) => showToast(error.message));
-  }
-});
-
-composerInput.addEventListener("focus", settleViewportAfterKeyboard);
-composerInput.addEventListener("blur", () => {
-  window.setTimeout(syncViewportHeight, 120);
-});
-
-window.addEventListener("resize", syncSidebarDrawer);
-window.addEventListener("resize", syncViewportHeight);
-window.visualViewport?.addEventListener("resize", syncViewportHeight);
-
-syncViewportHeight();
-bootstrap();
+window.onload = () => App.init();

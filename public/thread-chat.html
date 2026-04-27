@@ -1,161 +1,97 @@
-<!doctype html>
-<html lang="zh-Hant">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Codex Remote Hub</title>
-    <link rel="icon" type="image/svg+xml" href="./favicon.svg?v=20260427a">
-    <link rel="stylesheet" href="./thread-chat.css?v=20260427a">
-  </head>
-  <body>
-    <div id="loginGate" class="login-gate">
-      <form id="loginForm" class="login-card" autocomplete="on">
-        <p class="login-kicker">Codex Remote Hub</p>
-        <h1>远程任务台</h1>
-        <p class="login-copy">登录后可查看线程进展，并向对应线程发送推进消息。</p>
-        <label class="login-field">
-          <span>访问密码</span>
-          <input id="passwordInput" type="password" placeholder="输入强密码" autocomplete="current-password" required>
-        </label>
-        <button id="loginButton" class="primary-button" type="submit">进入</button>
-        <p id="loginError" class="login-error" aria-live="polite"></p>
-      </form>
+    <link rel="stylesheet" href="./thread-chat.css?v=20260427b">
+</head>
+<body>
+    <div id="login-overlay" class="overlay">
+        <div class="login-card">
+            <h2>Codex Remote Hub</h2>
+            <p>请输入访问令牌以继续</p>
+            <input type="password" id="login-password" placeholder="Password">
+            <button id="login-btn" class="primary-btn">登录</button>
+        </div>
     </div>
 
-    <div id="appShell" class="app-shell hidden">
-      <div id="sidebarBackdrop" class="sidebar-backdrop hidden"></div>
-      <aside class="sidebar">
-        <div class="sidebar-head">
-          <div>
-            <p class="eyebrow">本机任务</p>
-            <h1>Codex Remote Hub</h1>
-          </div>
-          <div class="sidebar-head-actions">
-            <button id="sidebarCloseButton" class="ghost-button compact mobile-only" type="button">收起</button>
-            <button id="logoutButton" class="ghost-button compact" type="button">锁定</button>
-          </div>
-        </div>
-
-        <div class="sidebar-toolbar">
-          <div class="security-pill">强密码保护</div>
-          <button id="refreshButton" class="ghost-button" type="button">刷新</button>
-        </div>
-
-        <div class="sidebar-meta">
-          <span id="syncBadge">同步于 --</span>
-          <span id="threadCountLabel">0 个线程</span>
-        </div>
-
-        <nav id="threadList" class="thread-list" aria-label="Threads"></nav>
-      </aside>
-
-      <main class="chat-shell">
-        <header class="chat-head">
-          <div class="chat-head-main">
-            <span id="threadStateLabel" class="thread-state-pill">等待选择线程</span>
-            <h2 id="threadTitle">选择左侧线程</h2>
-          </div>
-          <div class="chat-meta">
-            <button id="mobileThreadButton" class="ghost-button compact mobile-only" type="button">线程</button>
-            <button id="autopilotToggleButton" class="ghost-button compact" type="button">托管</button>
-            <span id="threadActiveAt">最后活动 --</span>
-            <span id="threadCanSend" class="send-badge idle">可发送</span>
-          </div>
-        </header>
-
-        <section id="autopilotPanel" class="autopilot-panel hidden" aria-label="托管编排">
-          <div class="autopilot-card">
-            <div class="autopilot-copy">
-              <p class="eyebrow">夜间托管</p>
-              <h3>让 Codex 自己往下跑</h3>
-              <p id="autopilotSummary">选择模式后，可开启托管或立即执行一次。</p>
+    <div id="app-container" class="app-container hidden">
+        <aside id="sidebar" class="sidebar">
+            <div class="sidebar-header">
+                <div class="brand">Codex Hub</div>
+                <button id="logout-btn" class="icon-btn" title="退出">✕</button>
             </div>
-            <div class="autopilot-status-card">
-              <span id="autopilotStateText">关闭</span>
-              <strong id="autopilotModeText">夜间继续</strong>
-            </div>
-          </div>
+            <div id="thread-list" class="thread-list">
+                </div>
+        </aside>
 
-          <div id="autopilotPresetList" class="autopilot-presets" aria-label="托管模式">
-            <button class="preset-chip active" data-autopilot-preset="night" type="button">
-              <strong>夜间继续</strong>
-              <span>适合睡前长任务</span>
-            </button>
-            <button class="preset-chip" data-autopilot-preset="progress" type="button">
-              <strong>进度巡检</strong>
-              <span>先问卡点再推进</span>
-            </button>
-            <button class="preset-chip" data-autopilot-preset="step" type="button">
-              <strong>拆步执行</strong>
-              <span>要求拆小步继续</span>
-            </button>
-          </div>
+        <main class="main-content">
+            <header class="autopilot-header">
+                <div class="autopilot-summary">
+                    <div class="status-group">
+                        <span class="mobile-menu-btn" id="mobile-menu-btn">☰</span>
+                        <span id="ap-status-dot" class="status-dot"></span>
+                        <span class="ap-title">托管：<b id="ap-mode-name">未开启</b></span>
+                    </div>
+                    <div class="action-group">
+                        <button id="toggle-ap-btn" class="secondary-btn">开启托管</button>
+                        <button id="tick-now-btn" class="secondary-btn">立即执行</button>
+                        <button id="expand-ap-btn" class="icon-btn">⚙</button>
+                    </div>
+                </div>
 
-          <div class="autopilot-actions">
-            <button id="autopilotPowerButton" class="primary-button" type="button">开启托管</button>
-            <button id="autopilotRunButton" class="ghost-button" type="button">执行一次</button>
-            <button id="autopilotAdvancedButton" class="ghost-button" type="button">高级设置</button>
-            <span id="autopilotStatus" class="composer-tip">未同步</span>
-          </div>
+                <div id="ap-advanced" class="ap-advanced hidden">
+                    <div class="setting-grid">
+                        <div class="field">
+                            <label>托管模式</label>
+                            <select id="ap-preset-select">
+                                <option value="night-default">夜间继续</option>
+                                <option value="progress-check">进度巡检</option>
+                                <option value="step-runner">拆步执行</option>
+                            </select>
+                        </div>
+                        <div class="field">
+                            <label>执行间隔 (分)</label>
+                            <input type="number" id="ap-interval" min="1">
+                        </div>
+                        <div class="field">
+                            <label>最大线程数</label>
+                            <input type="number" id="ap-max-threads" min="1">
+                        </div>
+                    </div>
+                    <div class="field mt-10">
+                        <label>完成标识 (逗号分隔)</label>
+                        <input type="text" id="ap-patterns" placeholder="已完成, done...">
+                    </div>
+                    <div class="ap-footer mt-10">
+                        <button id="save-ap-btn" class="primary-btn small">保存设置</button>
+                    </div>
+                </div>
+            </header>
 
-          <div id="autopilotAdvancedFields" class="autopilot-advanced hidden">
-            <div class="autopilot-grid">
-              <label class="mini-field">
-                <span>无变化后发送</span>
-                <input id="autopilotIntervalInput" type="number" min="1" max="240" value="15">
-              </label>
-              <label class="mini-field">
-                <span>同线程间隔</span>
-                <input id="autopilotCooldownInput" type="number" min="1" max="240" value="15">
-              </label>
-              <label class="mini-field">
-                <span>每轮线程数</span>
-                <input id="autopilotMaxThreadsInput" type="number" min="1" max="20" value="2">
-              </label>
-            </div>
+            <section id="chat-body" class="chat-body">
+                <div id="chat-welcome" class="welcome-msg">请从左侧选择一个线程开始对话</div>
+                <div id="messages-container"></div>
+            </section>
 
-            <label class="autopilot-textarea">
-              <span>话术编排，每行一条，按顺序轮换</span>
-              <textarea id="autopilotStepsInput" rows="4">继续
-进度？
-请拆下一步并继续执行，完成后说明结果。</textarea>
-            </label>
-
-            <label class="autopilot-textarea">
-              <span>完成识别词，命中后停止托管</span>
-              <textarea id="autopilotDoneInput" rows="2">已完成
-完成了
-done
-finished</textarea>
-            </label>
-          </div>
-        </section>
-
-        <section id="messageList" class="message-list empty">
-          选择一个线程后，这里会显示对话内容。
-        </section>
-
-        <footer class="composer">
-          <div class="quick-row">
-            <button class="quick-chip" data-quick-message="继续" type="button">继续</button>
-            <button class="quick-chip" data-quick-message="进度？" type="button">进度？</button>
-            <button class="quick-chip" data-quick-message="不对" type="button">不对</button>
-          </div>
-
-          <label class="composer-field">
-            <textarea id="composerInput" rows="3" placeholder="直接向当前线程发送消息"></textarea>
-          </label>
-
-          <div class="composer-actions">
-            <span id="composerStatus" class="composer-tip">按 ⌘/Ctrl + Enter 发送</span>
-            <button id="sendButton" class="primary-button" type="button">发送</button>
-          </div>
-        </footer>
-      </main>
+            <footer class="chat-footer">
+                <div class="quick-replies">
+                    <button class="quick-btn" data-msg="继续">继续</button>
+                    <button class="quick-btn" data-msg="进度？">进度？</button>
+                    <button class="quick-btn" data-msg="不对">不对</button>
+                    <button id="refresh-btn" class="quick-btn gray">↺ 刷新</button>
+                </div>
+                <div class="input-area">
+                    <textarea id="chat-input" placeholder="输入消息..." rows="1"></textarea>
+                    <button id="send-btn" class="primary-btn">发送</button>
+                </div>
+            </footer>
+        </main>
     </div>
 
-    <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+    <div id="toast-container"></div>
 
-    <script src="./thread-chat.js?v=20260427a" type="module"></script>
-  </body>
+    <script src="./thread-chat.js?v=20260427b"></script>
+</body>
 </html>
